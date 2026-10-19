@@ -211,6 +211,10 @@ android/              スマホ用アプリ MusicRPC Bridge (build.ps1 でビル
 relay/                Cloudflare Workers の中継サーバー
 ```
 
+## ライセンス
+
+[MIT License](LICENSE)
+
 ---
 
 Amazon Music は Amazon.com, Inc. またはその関連会社の、YouTube は Google LLC の商標です。

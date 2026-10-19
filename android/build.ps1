@@ -1,4 +1,4 @@
-# MusicRPC Bridge (Android) のビルド。Gradle を使わず SDK のツールだけで APK を作る。
+﻿# MusicRPC Bridge (Android) のビルド。Gradle を使わず SDK のツールだけで APK を作る。
 #   .\build.ps1                        SDK / JDK を自動で探す
 #   .\build.ps1 -Sdk <path> -Jdk <path>
 # 出力: build\MusicRPC-Bridge.apk
