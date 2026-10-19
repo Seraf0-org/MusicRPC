@@ -32,6 +32,8 @@
   "phone_port": 47615,
   "phone_token": "",
   "relay_url": "",
+  "upload_thumbnails": true,
+  "youtube_search_thumbnails": false,
   "phone_packages": {
     "com.amazon.mp3": "amazon",
     "com.google.android.youtube": "youtube",

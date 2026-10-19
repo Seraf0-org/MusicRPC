@@ -1,7 +1,13 @@
 package com.musicrpc.bridge;
 
 import android.content.ComponentName;
+import android.app.Notification;
 import android.content.pm.PackageManager;
+import android.graphics.Bitmap;
+import android.graphics.Canvas;
+import android.graphics.drawable.BitmapDrawable;
+import android.graphics.drawable.Drawable;
+import android.graphics.drawable.Icon;
 import android.media.MediaMetadata;
 import android.media.session.MediaController;
 import android.media.session.MediaSession;
@@ -11,6 +17,7 @@ import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
 import android.service.notification.NotificationListenerService;
+import android.service.notification.StatusBarNotification;
 
 import org.json.JSONObject;
 
@@ -20,7 +27,8 @@ import java.util.Map;
 
 /**
  * 端末で再生中のメディアセッションを監視し、変化があった時だけ PC へ送る。
- * 通知そのものは読まない (メディアセッションの一覧を取るのに通知リスナー権限が必要なだけ)。
+ * 通知の文字は読まない (メディアセッションの一覧を取るのに通知リスナー権限が必要なだけ)。
+ * 再生情報に画像が無いアプリは、再生通知の画像だけを使う (YouTube アプリはどちらにも画像を出さない)。
  */
 public class MediaListener extends NotificationListenerService {
 
@@ -152,7 +160,7 @@ public class MediaListener extends NotificationListenerService {
             JSONObject o = new JSONObject();
             if (best == null) {
                 o.put("state", "stopped");
-                send(o, "stopped");
+                send(o, "stopped", null, null);
                 return;
             }
             MediaMetadata md = best.getMetadata();
@@ -182,30 +190,82 @@ public class MediaListener extends NotificationListenerService {
             o.put("position", pos / 1000.0);
             String art = text(md, MediaMetadata.METADATA_KEY_ALBUM_ART_URI, MediaMetadata.METADATA_KEY_ART_URI,
                     MediaMetadata.METADATA_KEY_DISPLAY_ICON_URI);
+            Bitmap bitmap = null;
             if (art.startsWith("https://")) {
                 o.put("art", art);
+            } else {
+                bitmap = md.getBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART);
+                if (bitmap == null) bitmap = md.getBitmap(MediaMetadata.METADATA_KEY_ART);
+                if (bitmap == null) bitmap = md.getBitmap(MediaMetadata.METADATA_KEY_DISPLAY_ICON);
+                // YouTube などは再生情報に画像を入れないので、再生通知の画像を使う
+                if (bitmap == null) bitmap = notificationArt(best);
             }
 
-            // 同じ曲・同じ状態で、シークもしていなければ送らない
+            // 同じ曲・同じ状態で、シークもしていなければ送らない (画像が後から届いた時は送り直す)
             long startMs = System.currentTimeMillis() - pos;
-            String sig = pkg + "\n" + o.optString("title") + "\n" + o.optString("artist") + "\n" + o.optString("state");
+            String track = pkg + "\n" + o.optString("title") + "\n" + o.optString("artist");
+            String sig = track + "\n" + o.optString("state") + "\n" + (bitmap != null || o.has("art"));
             boolean seeked = playing && Math.abs(startMs - lastStartMs) > 3000;
             if (sig.equals(lastSignature) && !seeked) {
                 return;
             }
             lastStartMs = startMs;
-            send(o, sig);
+            send(o, sig, bitmap, track);
         } catch (Exception e) {
             lastStatus = "エラー: " + e;
         }
     }
 
-    private void send(JSONObject o, String sig) throws Exception {
+    private void send(JSONObject o, String sig, Bitmap art, String track) throws Exception {
         if (sig.equals("stopped") && lastSignature.equals("stopped")) {
             return;
         }
         lastSignature = sig;
-        Sender.send(this, o);
+        Sender.send(this, o, art, track);
+    }
+
+    /** 再生通知が後から出ることがあるので、監視中のアプリの通知が出たら送り直しを検討する。 */
+    @Override
+    public void onNotificationPosted(StatusBarNotification sbn) {
+        for (Pair p : watched.values()) {
+            if (p.controller.getPackageName().equals(sbn.getPackageName())) {
+                schedule();
+                return;
+            }
+        }
+    }
+
+    /** そのメディアセッションの再生通知に付いている画像 (YouTube なら動画のサムネイル)。文字は読まない。 */
+    private Bitmap notificationArt(MediaController c) {
+        try {
+            for (StatusBarNotification sbn : getActiveNotifications()) {
+                if (!sbn.getPackageName().equals(c.getPackageName())) {
+                    continue;
+                }
+                Notification n = sbn.getNotification();
+                Object token = n.extras.get(Notification.EXTRA_MEDIA_SESSION);
+                if (token == null || !token.equals(c.getSessionToken())) {
+                    continue;
+                }
+                Icon icon = n.getLargeIcon();
+                if (icon != null) {
+                    Drawable d = icon.loadDrawable(this);
+                    if (d instanceof BitmapDrawable) {
+                        return ((BitmapDrawable) d).getBitmap();
+                    }
+                    if (d != null && d.getIntrinsicWidth() > 0 && d.getIntrinsicHeight() > 0) {
+                        Bitmap b = Bitmap.createBitmap(d.getIntrinsicWidth(), d.getIntrinsicHeight(), Bitmap.Config.ARGB_8888);
+                        Canvas canvas = new Canvas(b);
+                        d.setBounds(0, 0, canvas.getWidth(), canvas.getHeight());
+                        d.draw(canvas);
+                        return b;
+                    }
+                }
+            }
+        } catch (Exception e) {
+            // 通知を取れない時は画像なしで送る
+        }
+        return null;
     }
 
     private String appLabel(String pkg) {

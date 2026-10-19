@@ -55,6 +55,8 @@ DEFAULT_CONFIG = {
     "phone_port": 47615,
     "phone_token": "",
     "relay_url": "",
+    "upload_thumbnails": True,
+    "youtube_search_thumbnails": False,
     "phone_packages": {
         "com.amazon.mp3": "amazon",
         "com.google.android.youtube": "youtube",
@@ -208,6 +210,10 @@ def window_titles():
 _site_cache = {}
 
 
+def youtube_tab_visible():
+    return any(" - YouTube" in wt and "YouTube Music" not in wt for wt in window_titles())
+
+
 def browser_site(title, album, guess=True):
     """ブラウザのメディアがどのサイトのものか推定する。見つかったらタイトルごとに覚えておく。
 
@@ -257,6 +263,8 @@ class MediaState:
     genre: str | None = None
     quality: str | None = None
     device: str = "pc"  # "pc" / "phone"
+    thumbnail: object = field(default=None, repr=False, compare=False)  # SMTC のサムネイル (画像データへの参照)
+    link: str | None = None  # 曲・動画そのもののページ (分かる場合)
 
     @property
     def key(self):
@@ -290,6 +298,7 @@ async def read_session(session, source):
         st.track_number = p.track_number or 0
         st.track_count = p.album_track_count or 0
         st.genres = [g for g in (p.genres or []) if g]
+        st.thumbnail = p.thumbnail
     except Exception as e:
         log.debug("media properties error: %s", e)
     st.shuffle = info.is_shuffle_active
@@ -339,6 +348,8 @@ async def pick_media(manager, cfg, enrich_amazon=None, extra=()):
             site = browser_site(st.title, st.album, guess=known_browser)
             if not known_browser and site not in ("youtube", "ytmusic"):
                 continue  # Spotify など、ブラウザ以外のアプリ
+            if site is None and (st.duration or 0) < 180 and youtube_tab_visible():
+                continue  # 広告: タブの題名は動画のままで、再生中の題名だけが広告になる
             if site == "other" and cfg["youtube_only"]:
                 continue
             st.source = site if site in ("youtube", "ytmusic") else "youtube"
@@ -565,6 +576,103 @@ def amazon_lookup(asin):
     return _scan(files, struct.pack("<I", 10) + asin.encode(), _metric_record(asin))
 
 
+# ---------------------------------------------------------------- thumbnails
+#
+# ブラウザが SMTC に渡すサムネイルは画像データだけで URL が無い。Discord には URL が必要なので、
+# 中継サーバーに置いてその URL を使う。
+
+async def read_thumbnail(ref):
+    from winrt.windows.storage.streams import Buffer, InputStreamOptions
+    stream = await ref.open_read_async()
+    size = int(stream.size)
+    if not 0 < size <= 8_000_000:
+        return None
+    buf = Buffer(size)
+    await stream.read_async(buf, size, InputStreamOptions.READ_AHEAD)
+    return bytes(buf)
+
+
+def square_jpeg(data, size=512):
+    """黒帯を除いて中央を正方形に切り抜き、JPEG にする。"""
+    import io
+    from PIL import Image
+    im = Image.open(io.BytesIO(data)).convert("RGB")
+    bbox = im.convert("L").point(lambda p: 255 if p > 24 else 0).getbbox()
+    if bbox and (bbox[2] - bbox[0]) * (bbox[3] - bbox[1]) > im.width * im.height * 0.5:
+        im = im.crop(bbox)
+    side = min(im.size)
+    left, top = (im.width - side) // 2, (im.height - side) // 2
+    im = im.crop((left, top, left + side, top + side))
+    if side > size:
+        im = im.resize((size, size), Image.LANCZOS)
+    out = io.BytesIO()
+    im.save(out, "JPEG", quality=85, optimize=True)
+    return out.getvalue()
+
+
+_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+       "(KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36")
+
+
+def _http_get(url, timeout=10):
+    req = urllib.request.Request(url, headers={"User-Agent": _UA, "Accept-Language": "ja,en;q=0.8"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return r.read()
+
+
+def youtube_search(title, channel):
+    """YouTube の検索結果から、題名が一致する動画の ID を探す。
+
+    検索ページの自動取得は YouTube の利用規約で認められていないため、既定ではオフ
+    (config の youtube_search_thumbnails)。新しい動画ごとに 1 回だけ呼ぶ。
+    """
+    channel = clean_artist(channel)
+    html = _http_get("https://www.youtube.com/results?" + urllib.parse.urlencode(
+        {"search_query": f"{title} {channel}".strip()})).decode("utf-8", "replace")
+    m = re.search(r"var ytInitialData\s*=\s*(\{.*?\});\s*</script>", html, re.S)
+    if not m:
+        return None
+    stack, videos = [json.loads(m[1])], []
+    while stack and len(videos) < 20:
+        node = stack.pop()
+        if isinstance(node, dict):
+            if "videoRenderer" in node:
+                v = node["videoRenderer"]
+                runs = lambda k: "".join(r.get("text", "") for r in v.get(k, {}).get("runs", []))
+                videos.append((v.get("videoId"), runs("title"), runs("ownerText") or runs("longBylineText")))
+            else:
+                stack.extend(reversed(list(node.values())))
+        elif isinstance(node, list):
+            stack.extend(reversed(node))
+    nt, nc = _norm(title), _norm(channel)
+    for vid, vtitle, vchannel in videos:  # 題名が同じもの (チャンネルも同じならなお良い)
+        if vid and _norm(vtitle) == nt and (not nc or nc in _norm(vchannel) or _norm(vchannel) in nc):
+            return vid
+    for vid, vtitle, vchannel in videos:
+        if vid and _norm(vtitle) == nt:
+            return vid
+    for vid, vtitle, vchannel in videos:  # YouTube Music の曲名は動画題名の一部のことが多い
+        if vid and len(nt) > 3 and nt in _norm(vtitle) and nc and (nc in _norm(vchannel) or _norm(vchannel) in nc):
+            return vid
+    return None
+
+
+def youtube_thumbnail(video_id):
+    for name in ("maxresdefault", "hqdefault"):
+        try:
+            return _http_get(f"https://i.ytimg.com/vi/{video_id}/{name}.jpg")
+        except urllib.error.HTTPError:
+            continue
+    return None
+
+
+def upload_art(relay_url, token, jpeg):
+    req = urllib.request.Request(relay_url.rstrip("/") + "/art", data=jpeg, method="PUT", headers={
+        "Authorization": f"Bearer {token}", "Content-Type": "image/jpeg", "User-Agent": "MusicRPC/1.0"})
+    with urllib.request.urlopen(req, timeout=15) as r:
+        return json.load(r)["url"]
+
+
 # ---------------------------------------------------------------- Android (MusicRPC Bridge)
 #
 # スマホのアプリは曲・再生状態・シーク位置が変わった時だけ送ってくる。
@@ -773,21 +881,28 @@ def fmt_time(sec):
 
 
 def track_url(st, cfg):
+    if st.link:
+        return st.link
     if st.source == "amazon" and st.asin:
         domain = cfg["amazon_music_domain"]
         if st.album_asin:
             return f"https://{domain}/albums/{st.album_asin}?trackAsin={st.asin}"
         return f"https://{domain}/tracks/{st.asin}"
-    return search_url(st.source, f"{st.title} {clean_artist(st.artist)}", cfg)[:512]
+    return search_url(st.source, f"{st.title} {clean_artist(st.artist)}", cfg)
 
 
-def search_url(source, query, cfg):
-    q = urllib.parse.quote(query)
+def search_url(source, query, cfg, limit=256):
+    """検索ページの URL。Discord の URL 上限 (256 文字) に収まるよう検索語を短くする。"""
     if source == "amazon":
-        return f"https://{cfg['amazon_music_domain']}/search/{q}"
-    if source == "ytmusic":
-        return f"https://music.youtube.com/search?q={q}"
-    return f"https://www.youtube.com/results?search_query={q}"
+        base = f"https://{cfg['amazon_music_domain']}/search/"
+    elif source == "ytmusic":
+        base = "https://music.youtube.com/search?q="
+    else:
+        base = "https://www.youtube.com/results?search_query="
+    query = query.strip()
+    while query and len(base) + len(urllib.parse.quote(query)) > limit:
+        query = query[:-1]
+    return base + urllib.parse.quote(query.strip())
 
 
 def build_activity(st: MediaState, meta: TrackMeta, position, duration, cfg):
@@ -795,7 +910,7 @@ def build_activity(st: MediaState, meta: TrackMeta, position, duration, cfg):
     label = SOURCE_LABEL[src]
     images = cfg["images"]
     artist = (clean_artist(st.artist) if src != "amazon" else st.artist) or st.album_artist or "Unknown Artist"
-    url = lambda q: search_url(src, q, cfg)[:512]
+    url = lambda q: search_url(src, q, cfg)
     activity_type = 3 if src == "youtube" and cfg["youtube_activity"] == "watching" else 2
 
     act = {
@@ -891,6 +1006,82 @@ class App:
         self.amazon_log = AmazonLog()
         self.amazon_cache = {}
         self.phone = PhoneHub()
+        self.art_urls = {}  # 曲 → 中継サーバーに置いたサムネイルの URL (失敗時は None)
+        self.art_pending = set()
+        self.art_seen = (None, 0.0)
+        self.yt_cache = {}  # (題名, チャンネル) → {"url", "art"} / None
+        self.yt_pending = set()
+
+    def youtube_info(self, st):
+        """YouTube 検索で見つけた動画のページとサムネイル。返り値: (検索済みか, 情報)"""
+        if st.source not in ("youtube", "ytmusic") or not self.cfg["youtube_search_thumbnails"]:
+            return True, None
+        key = (st.title, clean_artist(st.artist))
+        if key in self.yt_cache:
+            return True, self.yt_cache[key]
+        if key not in self.yt_pending:
+            self.yt_pending.add(key)
+            asyncio.create_task(self._youtube_lookup(key, st.source))
+        return False, None
+
+    async def _youtube_lookup(self, key, source):
+        info = None
+        try:
+            vid = await asyncio.to_thread(youtube_search, *key)
+            if vid:
+                site = "https://music.youtube.com" if source == "ytmusic" else "https://www.youtube.com"
+                info = {"url": f"{site}/watch?v={vid}", "art": f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg"}
+                if self.cfg["relay_url"]:
+                    try:  # 黒帯を除いて正方形にしたものを置く。失敗したら YouTube の画像をそのまま使う
+                        data = await asyncio.to_thread(youtube_thumbnail, vid)
+                        if data:
+                            jpeg = await asyncio.to_thread(square_jpeg, data)
+                            info["art"] = await asyncio.to_thread(
+                                upload_art, self.cfg["relay_url"], self.cfg["phone_token"], jpeg)
+                    except Exception as e:
+                        log.warning("サムネイルを置けませんでした: %s", e)
+            log.info("YouTube 検索: %s → %s", key[0], vid)
+        except Exception as e:
+            log.warning("YouTube 検索に失敗しました: %s", e)
+        finally:
+            if len(self.yt_cache) > 300:
+                self.yt_cache.clear()
+            self.yt_cache[key] = info
+            self.yt_pending.discard(key)
+
+    def thumbnail_url(self, st):
+        """ブラウザのサムネイルを中継サーバーに置き、その URL を返す (置き終わるまでは None)。"""
+        cfg = self.cfg
+        if st.device != "pc" or st.source not in ("youtube", "ytmusic"):
+            return None
+        if not (cfg["upload_thumbnails"] and cfg["relay_url"]):
+            return None
+        key = st.key
+        if key in self.art_urls:
+            return self.art_urls[key]
+        if self.art_seen[0] != key:
+            self.art_seen = (key, time.time())
+        # 曲が変わった直後は前の曲の画像が残っていることがあるので、少し待ってから読む
+        if st.thumbnail is not None and key not in self.art_pending and time.time() - self.art_seen[1] >= 2:
+            self.art_pending.add(key)
+            asyncio.create_task(self._upload_thumbnail(key, st.thumbnail))
+        return None
+
+    async def _upload_thumbnail(self, key, ref):
+        url = None
+        try:
+            data = await read_thumbnail(ref)
+            if data:
+                jpeg = await asyncio.to_thread(square_jpeg, data)
+                url = await asyncio.to_thread(upload_art, self.cfg["relay_url"], self.cfg["phone_token"], jpeg)
+                log.info("サムネイルを置きました: %s (%d bytes)", key[2], len(jpeg))
+        except Exception as e:
+            log.warning("サムネイルを置けませんでした: %s", e)
+        finally:
+            if len(self.art_urls) > 300:
+                self.art_urls.clear()
+            self.art_urls[key] = url
+            self.art_pending.discard(key)
 
     async def enrich_amazon(self, st):
         """SMTC に出てこない曲名などを Amazon Music のローカルデータで補う。"""
@@ -989,7 +1180,7 @@ class App:
         try:
             await self._ipc_call(self.ipc.set_activity, activity)
         except ValueError as e:
-            if activity and not self.legacy_fields:
+            if activity and not self.legacy_fields and "is not allowed" in str(e):
                 log.warning("Discord が新しいフィールドを拒否、互換モードで再送: %s", e)
                 self.legacy_fields = True
                 return await self.send(activity, cid)
@@ -1075,6 +1266,12 @@ class App:
 
         self.clock.update(st.key, st.playing)
         meta = self.get_meta(st)
+        searched, yt = self.youtube_info(st)
+        if yt:
+            st.artwork = st.artwork or yt["art"]
+            st.link = yt["url"]
+        if searched:  # 検索で見つからなかった時だけ、ブラウザの小さいサムネイルを使う
+            st.artwork = st.artwork or self.thumbnail_url(st)
         duration = st.duration or meta.duration
         if st.position is not None:
             position = st.position
@@ -1095,7 +1292,7 @@ class App:
         icon = "▶" if st.playing else "⏸"
         self.set_status(f"[{label}] {icon} {st.artist} - {st.title}")
 
-        sig = (st.key, st.status, st.shuffle, st.repeat, st.quality, st.artwork or meta.artwork, duration,
+        sig = (st.key, st.status, st.shuffle, st.repeat, st.quality, st.artwork or meta.artwork, st.link, duration,
                self.legacy_fields)
         start_ts = time.time() - position
         if self.last_sent and self.last_sent != "cleared":

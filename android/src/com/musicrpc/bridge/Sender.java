@@ -2,6 +2,7 @@ package com.musicrpc.bridge;
 
 import android.content.Context;
 import android.content.SharedPreferences;
+import android.graphics.Bitmap;
 import android.net.ConnectivityManager;
 import android.net.LinkAddress;
 import android.net.LinkProperties;
@@ -10,6 +11,8 @@ import android.net.NetworkCapabilities;
 
 import org.json.JSONObject;
 
+import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
@@ -20,8 +23,10 @@ import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
 import java.util.Date;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -41,7 +46,15 @@ final class Sender {
         return ctx.getSharedPreferences("settings", Context.MODE_PRIVATE);
     }
 
-    static void send(Context ctx, JSONObject o) throws Exception {
+    /** 曲 → 中継サーバーに置いた画像の URL。同じ曲で何度もアップロードしないため。 */
+    private static final Map<String, String> ART_URLS = new LinkedHashMap<String, String>(16, 0.75f, true) {
+        @Override
+        protected boolean removeEldestEntry(Map.Entry<String, String> eldest) {
+            return size() > 50;
+        }
+    };
+
+    static void send(Context ctx, JSONObject o, Bitmap art, String track) throws Exception {
         Context app = ctx.getApplicationContext();
         SharedPreferences p = prefs(app);
         String token = p.getString("token", "").trim();
@@ -53,6 +66,19 @@ final class Sender {
 
         EXECUTOR.execute(() -> {
             StringBuilder result = new StringBuilder();
+            // ジャケット / サムネイルは URL が無いので中継サーバーに置く (中継サーバーが無い時は送らない)
+            if (art != null && !relay.isEmpty() && track != null) {
+                try {
+                    String url = ART_URLS.get(track);
+                    if (url == null) {
+                        url = uploadArt(relay, token, art);
+                        ART_URLS.put(track, url);
+                    }
+                    o.put("art", url);
+                } catch (Exception e) {
+                    result.append("画像 ✗ / ");
+                }
+            }
             try {
                 JSONObject lan = new JSONObject(o.toString());
                 lan.put("token", token);
@@ -121,6 +147,43 @@ final class Sender {
         int bc = ip | ~mask;
         return InetAddress.getByAddress(new byte[]{
                 (byte) (bc >>> 24), (byte) (bc >>> 16), (byte) (bc >>> 8), (byte) bc});
+    }
+
+    /** 中央を正方形に切り抜いて 512px の JPEG にし、中継サーバーに置く。置いた画像の URL を返す。 */
+    private static String uploadArt(String relay, String token, Bitmap src) throws Exception {
+        int side = Math.min(src.getWidth(), src.getHeight());
+        Bitmap square = Bitmap.createBitmap(src, (src.getWidth() - side) / 2, (src.getHeight() - side) / 2, side, side);
+        Bitmap scaled = side > 512 ? Bitmap.createScaledBitmap(square, 512, 512, true) : square;
+        ByteArrayOutputStream jpeg = new ByteArrayOutputStream();
+        scaled.compress(Bitmap.CompressFormat.JPEG, 85, jpeg);
+
+        String base = relay.endsWith("/") ? relay.substring(0, relay.length() - 1) : relay;
+        HttpURLConnection c = (HttpURLConnection) new URL(base + "/art").openConnection();
+        try {
+            c.setConnectTimeout(5000);
+            c.setReadTimeout(10000);
+            c.setRequestMethod("PUT");
+            c.setDoOutput(true);
+            c.setRequestProperty("Content-Type", "image/jpeg");
+            c.setRequestProperty("Authorization", "Bearer " + token);
+            try (OutputStream out = c.getOutputStream()) {
+                jpeg.writeTo(out);
+            }
+            if (c.getResponseCode() != 200) {
+                throw new Exception("HTTP " + c.getResponseCode());
+            }
+            ByteArrayOutputStream body = new ByteArrayOutputStream();
+            try (InputStream in = c.getInputStream()) {
+                byte[] buf = new byte[4096];
+                int n;
+                while ((n = in.read(buf)) > 0) {
+                    body.write(buf, 0, n);
+                }
+            }
+            return new JSONObject(body.toString("UTF-8")).getString("url");
+        } finally {
+            c.disconnect();
+        }
     }
 
     private static int post(String relay, String token, byte[] body) throws Exception {
