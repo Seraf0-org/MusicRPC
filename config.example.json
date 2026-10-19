@@ -1,0 +1,38 @@
+{
+  "client_id": "",
+  "youtube_client_id": "",
+  "youtube_music_client_id": "",
+  "amazon_match": "Amazon.Music",
+  "browser_match": [
+    "chrome"
+  ],
+  "youtube_only": true,
+  "youtube_activity": "listening",
+  "poll_interval_sec": 1.0,
+  "status_display": "details",
+  "artwork_lookup": true,
+  "itunes_countries": [
+    "JP",
+    "US"
+  ],
+  "amazon_music_domain": "music.amazon.co.jp",
+  "show_buttons": true,
+  "show_when_paused": true,
+  "clear_after_paused_min": 10,
+  "phone_enabled": true,
+  "phone_port": 47615,
+  "phone_token": "",
+  "relay_url": "",
+  "phone_packages": {
+    "com.amazon.mp3": "amazon",
+    "com.google.android.youtube": "youtube",
+    "com.google.android.apps.youtube.music": "ytmusic"
+  },
+  "images": {
+    "amazon": "amazon_music",
+    "youtube": "youtube",
+    "ytmusic": "youtube",
+    "playing": "playing",
+    "paused": "paused"
+  }
+}

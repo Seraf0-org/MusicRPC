@@ -1,0 +1,30 @@
+# 個人設定 (Discord アプリ ID など)
+config.json
+
+# ログ
+*.log
+
+# Android: ビルド成果物と署名鍵 (鍵は絶対に公開しない)
+android/build/
+android/keystore/
+
+# Cloudflare 中継サーバー
+relay/node_modules/
+relay/.wrangler/
+relay/.dev.vars
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+build/
+dist/
+*.spec
+
+# OS / エディタ
+Thumbs.db
+desktop.ini
+.DS_Store
+.vscode/
+.idea/

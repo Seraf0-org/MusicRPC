@@ -1,0 +1,10 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "musicrpc-relay",
+  "main": "worker.js",
+  "compatibility_date": "2026-10-01",
+  "durable_objects": {
+    "bindings": [{ "name": "CHANNEL", "class_name": "Channel" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Channel"] }]
+}
