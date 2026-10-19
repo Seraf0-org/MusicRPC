@@ -4,8 +4,17 @@
   "youtube_music_client_id": "",
   "amazon_match": "Amazon.Music",
   "browser_match": [
-    "chrome"
+    "chrome",
+    "msedge",
+    "brave",
+    "comet",
+    "vivaldi",
+    "opera",
+    "chromium",
+    "firefox",
+    "308046b0af4a39cb"
   ],
+  "detect_other_browsers": true,
   "youtube_only": true,
   "youtube_activity": "listening",
   "poll_interval_sec": 1.0,

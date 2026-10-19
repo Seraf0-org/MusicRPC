@@ -1,6 +1,6 @@
 # MusicRPC
 
-Amazon Music デスクトップアプリと、Chrome で再生中の YouTube / YouTube Music の再生情報を
+Amazon Music デスクトップアプリと、ブラウザ (Chrome / Edge / Brave / Firefox など) で再生中の YouTube / YouTube Music の再生情報を
 Discord の Rich Presence (「○○を再生中」) に表示する Windows 用の常駐ツールです。
 Android スマホで再生中の曲も、付属のアプリ (MusicRPC Bridge) を入れれば表示できます。
 
@@ -32,7 +32,8 @@ Android スマホで再生中の曲も、付属のアプリ (MusicRPC Bridge) �
 - Windows 10 / 11
 - Python 3.10 以上
 - Discord デスクトップアプリ
-- Amazon Music デスクトップアプリ (v9.x で確認) / Google Chrome
+- Amazon Music デスクトップアプリ (v9.x で確認)
+- YouTube 用のブラウザ: Chrome で確認。Edge / Brave / Comet / Vivaldi / Opera / Firefox などにも対応
 - スマホ連携: Android 8.0 以上。別のネットワークでも使う場合は Cloudflare アカウント (無料プランで可) と Node.js
 
 ## セットアップ
@@ -150,7 +151,8 @@ APK ファイルを直接スマホに送ってインストールした場合、A
 | `client_id` | | Amazon Music 用 Discord アプリ ID (必須) |
 | `youtube_client_id` | | YouTube 用 Discord アプリ ID |
 | `youtube_music_client_id` | | YouTube Music 用 (空なら `youtube_client_id`) |
-| `browser_match` | `["chrome"]` | YouTube を拾うブラウザ。Edge も使うなら `"msedge"` を追加 |
+| `browser_match` | `["chrome", "msedge", "brave", ...]` | YouTube を拾うブラウザ (メディアコントロールに登録された名前の一部)。`python music_rpc.py --probe` の `session:` で確認できます |
+| `detect_other_browsers` | `true` | 一覧に無いブラウザでも、YouTube のウィンドウが開いていれば拾う |
 | `youtube_only` | `true` | ブラウザで再生中の YouTube 以外のサイトを無視 |
 | `youtube_activity` | `listening` | `watching` にすると YouTube を「視聴中」で表示 |
 | `status_display` | `details` | メンバーリストに出す内容: `name` (アプリ名) / `state` (アーティスト) / `details` (曲名) |
@@ -170,10 +172,12 @@ APK ファイルを直接スマホに送ってインストールした場合、A
 
 ## しくみ
 
-### YouTube (Chrome)
+### YouTube (ブラウザ)
 
-Chrome が Windows のメディアコントロール (SMTC) に出している曲名・チャンネル名・再生位置を読みます。
-YouTube かどうかは Chrome のウィンドウタイトルで判定します (曲が変わったときだけ)。
+ブラウザが Windows のメディアコントロール (SMTC) に出している曲名・チャンネル名・再生位置を読みます。
+YouTube かどうかはブラウザのウィンドウタイトルで判定します (曲が変わったときだけ)。
+`browser_match` に無いブラウザは、YouTube のウィンドウが見つかった時だけ採用します
+(Spotify などブラウザ以外のアプリを誤って拾わないため)。
 
 ### Amazon Music
 
@@ -195,7 +199,8 @@ Discord クライアントのローカル IPC (名前付きパイプ `discord-ip
 
 - YouTube の動画サムネイルは取得できません。iTunes で曲が見つかればそのジャケットを表示し、
   見つからない場合 (MV、歌ってみた など) はアイコンを表示します
-- YouTube のタブが裏にあるとサイトを判別できないため、YouTube として扱います
+- YouTube のタブが裏にあるとサイトを判別できないため、`browser_match` のブラウザなら YouTube として扱い、
+  それ以外のブラウザでは表示しません
 - Amazon Music のアップデートでファイル形式が変わると、曲名などが取得できなくなることがあります
   (その場合はアーティスト名だけを表示します)
 

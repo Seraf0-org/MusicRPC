@@ -38,7 +38,9 @@ DEFAULT_CONFIG = {
     "youtube_client_id": "",
     "youtube_music_client_id": "",
     "amazon_match": "Amazon.Music",
-    "browser_match": ["chrome"],
+    "browser_match": ["chrome", "msedge", "brave", "comet", "vivaldi", "opera", "chromium", "firefox",
+                      "308046b0af4a39cb"],
+    "detect_other_browsers": True,
     "youtube_only": True,
     "youtube_activity": "listening",
     "poll_interval_sec": 1.0,
@@ -206,24 +208,24 @@ def window_titles():
 _site_cache = {}
 
 
-def browser_site(title, album):
-    """ブラウザのメディアがどのサイトのものか推定する。曲が変わった時だけウィンドウを走査する。
+def browser_site(title, album, guess=True):
+    """ブラウザのメディアがどのサイトのものか推定する。見つかったらタイトルごとに覚えておく。
 
     返り値: "youtube" / "ytmusic" / "other" / None(タブが裏にあって判別不能)
+    guess=True なら、判別できない時にアルバム名の有無で YouTube Music と推定する。
     """
-    if title in _site_cache:
-        return _site_cache[title]
-    site = None
-    for wt in window_titles() if len(title) >= 4 else ():
-        if title in wt:
-            site = "ytmusic" if "YouTube Music" in wt else "youtube" if "YouTube" in wt else "other"
-            break
-    if site is None and album:
-        site = "ytmusic"  # YouTube Music はアルバム名を出す。YouTube は出さない
-    if site is not None:
-        if len(_site_cache) > 200:
-            _site_cache.clear()
-        _site_cache[title] = site
+    site = _site_cache.get(title)
+    if site is None:
+        for wt in window_titles() if len(title) >= 4 else ():
+            if title in wt:
+                site = "ytmusic" if "YouTube Music" in wt else "youtube" if "YouTube" in wt else "other"
+                break
+        if site is not None:
+            if len(_site_cache) > 200:
+                _site_cache.clear()
+            _site_cache[title] = site
+    if site is None and guess and album:
+        return "ytmusic"  # YouTube Music はアルバム名を出す。YouTube は出さない
     return site
 
 
@@ -317,12 +319,15 @@ async def pick_media(manager, cfg, enrich_amazon=None, extra=()):
     candidates = []
     for s in manager.get_sessions():
         app_id = (s.source_app_user_model_id or "").lower()
+        known_browser = False
         if amazon and amazon in app_id:
             source = "amazon"
         elif any(b in app_id for b in browsers):
-            source = "youtube"
+            source, known_browser = "youtube", True
+        elif cfg["detect_other_browsers"]:
+            source = "youtube"  # 一覧に無いブラウザ: YouTube のウィンドウが見つかった時だけ採用
         else:
-            continue  # 対象外のアプリは中身を読まない
+            continue
         st = await read_session(s, source)
         if st.status not in ("playing", "paused"):
             continue
@@ -331,7 +336,9 @@ async def pick_media(manager, cfg, enrich_amazon=None, extra=()):
         if not st.title:
             continue
         if source == "youtube":
-            site = browser_site(st.title, st.album)
+            site = browser_site(st.title, st.album, guess=known_browser)
+            if not known_browser and site not in ("youtube", "ytmusic"):
+                continue  # Spotify など、ブラウザ以外のアプリ
             if site == "other" and cfg["youtube_only"]:
                 continue
             st.source = site if site in ("youtube", "ytmusic") else "youtube"
