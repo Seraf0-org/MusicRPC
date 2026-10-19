@@ -987,6 +987,7 @@ def strip_new_fields(act):
 
 class App:
     MIN_SEND_INTERVAL = 2.5
+    SEEK_RESEND_SEC = 15
 
     def __init__(self):
         self.cfg = load_config()
@@ -1297,13 +1298,19 @@ class App:
         start_ts = time.time() - position
         if self.last_sent and self.last_sent != "cleared":
             last_sig, last_start = self.last_sent
-            seek = st.playing and abs(start_ts - last_start) > 3
+            # 曲の終わりでは再生位置が長さで頭打ちになり、開始時刻がずれていくのでシーク扱いしない
+            at_end = bool(duration) and position >= duration - 1
+            seek = st.playing and not at_end and abs(start_ts - last_start) > 3
             if last_sig == sig and not seek:
                 return
+            if last_sig == sig and time.time() - self.last_send_time < self.SEEK_RESEND_SEC:
+                return  # シークだけの送り直しは間隔をあける (Discord が更新を受け付けなくなるため)
         if time.time() - self.last_send_time < self.MIN_SEND_INTERVAL:
             return  # Discord のレート制限対策: 次の tick で送る
-        if await self.send(build_activity(st, meta, position, duration, self.cfg), self.client_id_for(st.source)):
+        activity = build_activity(st, meta, position, duration, self.cfg)
+        if await self.send(activity, self.client_id_for(st.source)):
             self.last_sent = (sig, start_ts)
+            log.info("送信: [%s] %s / 画像 %s", label, st.title, activity["assets"]["large_image"][-48:])
 
 
 # ---------------------------------------------------------------- tray / startup
