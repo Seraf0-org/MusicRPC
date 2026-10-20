@@ -302,7 +302,12 @@ async def read_session(session, source):
     except Exception as e:
         log.debug("media properties error: %s", e)
     st.shuffle = info.is_shuffle_active
-    st.repeat = REPEAT_NAMES.get(int(info.auto_repeat_mode)) if info.auto_repeat_mode is not None else None
+    try:
+        repeat_mode = info.auto_repeat_mode
+        st.repeat = REPEAT_NAMES.get(int(repeat_mode)) if repeat_mode is not None else None
+    except Exception as e:
+        # Optional playback details must not block updates for every session.
+        log.debug("repeat mode error (%s): %s", st.app_id, e)
 
     t = session.get_timeline_properties()
     end = _seconds(t.end_time) - _seconds(t.start_time)

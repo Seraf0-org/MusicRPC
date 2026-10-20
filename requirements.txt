@@ -1,4 +1,5 @@
 winrt-Windows.Media.Control
+winrt-Windows.Media
 winrt-Windows.Foundation
 winrt-Windows.Foundation.Collections
 winrt-Windows.Storage.Streams
