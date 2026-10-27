@@ -1,6 +1,6 @@
 # MusicRPC
 
-Amazon Music デスクトップアプリと、ブラウザ (Chrome / Edge / Brave / Firefox など) で再生中の YouTube / YouTube Music の再生情報を
+Amazon Music デスクトップアプリ、Windows のメディア プレーヤー、ブラウザ (Chrome / Edge / Brave / Firefox など) で再生中の YouTube / YouTube Music の再生情報を
 Discord の Rich Presence (「○○を再生中」) に表示する Windows 用の常駐ツールです。
 Android スマホで再生中の曲も、付属のアプリ (MusicRPC Bridge) を入れれば表示できます。
 
@@ -33,7 +33,8 @@ Android スマホで再生中の曲も、付属のアプリ (MusicRPC Bridge) �
 | スマホの Amazon Music | Amazon のジャケット |
 | スマホのその他のアプリ | 再生情報か再生通知に付いている画像 (中継サーバーが必要) |
 | スマホの YouTube | 検索がオフならなし (YouTube アプリが画像を出さないため) |
-| 上記が取れない場合 | iTunes で曲を検索したジャケット → アイコン |
+| メディア プレーヤー | 曲ファイルに埋め込まれたジャケット (中継サーバーが必要) |
+| 上記が取れない場合 | iTunes で曲を検索したジャケット (アーティストが分かる時だけ) → アイコン |
 
 ### YouTube の動画検索 (任意・既定でオフ)
 
@@ -45,12 +46,16 @@ Android スマホで再生中の曲も、付属のアプリ (MusicRPC Bridge) �
 > robots.txt (`/results` の禁止) に反します。そのため既定ではオフです。オンにする場合は自己責任で使ってください。
 > 規約に沿って同じことをするには YouTube Data API が必要です (このツールは未対応)。
 
-YouTube の広告は表示しません (YouTube のタブが見えていて、再生中の題名がどのウィンドウにも無く、3 分未満のもの)。
+YouTube の広告は表示しません (再生中の題名がどのウィンドウにも無く、YouTube のタブが見えていて 3 分未満のもの、
+またはタブが裏にあって 35 秒以下のもの)。
 
 サムネイルは URL が無い画像データなので、中継サーバーに置いてから Discord に渡します
 (黒帯を除いて正方形に切り抜き、512px の JPEG にします)。中継サーバーには直近 300 枚だけ残ります。
 
-**優先順位:** 再生中 (PC の Amazon Music > PC の YouTube > スマホ) > 一時停止中 (同じ順)
+**優先順位:** 再生中 (PC の Amazon Music > メディア プレーヤー > PC の YouTube > スマホ) > 一時停止中 (同じ順)
+
+メディア プレーヤーは手元のファイルなので、曲名のリンクと「○○で聴く」ボタンは付きません
+(iTunes で曲が見つかった時だけ「他のサービスで聴く」を出します)。タグの無いファイルはファイル名を題名にします。
 
 スマホの再生は小さい画像のホバーに「スマホ」と表示されます。
 
@@ -61,6 +66,7 @@ YouTube の広告は表示しません (YouTube のタブが見えていて、�
 - Discord デスクトップアプリ
 - Amazon Music デスクトップアプリ (v9.x で確認)
 - YouTube 用のブラウザ: Chrome で確認。Edge / Brave / Comet / Vivaldi / Opera / Firefox などにも対応
+- メディア プレーヤー: Windows 11 の「メディア プレーヤー」(Microsoft.ZuneMusic)。古い Windows Media Player は非対応
 - スマホ連携: Android 8.0 以上。別のネットワークでも使う場合は Cloudflare アカウント (無料プランで可) と Node.js
 
 ## セットアップ
@@ -94,6 +100,7 @@ python music_rpc.py --make-assets
 |---|---|---|
 | `amazon_music.png` | ジャケットが見つからないときの画像 | Amazon Music 用アプリ |
 | `youtube.png` | 同上 (YouTube) | YouTube 用アプリ |
+| `media_player.png` | 同上 (メディア プレーヤー) | メディア プレーヤー用アプリ |
 | `playing.png` / `paused.png` | 再生中 / 一時停止の小さいアイコン | 両方 |
 
 ### 4. 起動
@@ -179,6 +186,8 @@ APK ファイルを直接スマホに送ってインストールした場合、A
 | `client_id` | | Amazon Music 用 Discord アプリ ID (必須) |
 | `youtube_client_id` | | YouTube 用 Discord アプリ ID |
 | `youtube_music_client_id` | | YouTube Music 用 (空なら `youtube_client_id`) |
+| `mediaplayer_client_id` | | メディア プレーヤー用 (空なら `client_id`) |
+| `mediaplayer_match` | `Microsoft.ZuneMusic` | メディア プレーヤーとして拾うアプリ (メディアコントロールに登録された名前の一部) |
 | `browser_match` | `["chrome", "msedge", "brave", ...]` | YouTube を拾うブラウザ (メディアコントロールに登録された名前の一部)。`python music_rpc.py --probe` の `session:` で確認できます |
 | `detect_other_browsers` | `true` | 一覧に無いブラウザでも、YouTube のウィンドウが開いていれば拾う |
 | `youtube_only` | `true` | ブラウザで再生中の YouTube 以外のサイトを無視 |

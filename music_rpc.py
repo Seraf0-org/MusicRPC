@@ -37,7 +37,9 @@ DEFAULT_CONFIG = {
     "client_id": "",
     "youtube_client_id": "",
     "youtube_music_client_id": "",
+    "mediaplayer_client_id": "",
     "amazon_match": "Amazon.Music",
+    "mediaplayer_match": "Microsoft.ZuneMusic",
     "browser_match": ["chrome", "msedge", "brave", "comet", "vivaldi", "opera", "chromium", "firefox",
                       "308046b0af4a39cb"],
     "detect_other_browsers": True,
@@ -66,12 +68,14 @@ DEFAULT_CONFIG = {
         "amazon": "amazon_music",
         "youtube": "youtube",
         "ytmusic": "youtube",
+        "mediaplayer": "media_player",
         "playing": "playing",
         "paused": "paused",
     },
 }
 
-SOURCE_LABEL = {"amazon": "Amazon Music", "youtube": "YouTube", "ytmusic": "YouTube Music"}
+SOURCE_LABEL = {"amazon": "Amazon Music", "youtube": "YouTube", "ytmusic": "YouTube Music",
+                "mediaplayer": "Media Player"}
 
 log = logging.getLogger("musicrpc")
 
@@ -322,13 +326,18 @@ async def read_session(session, source):
 
 
 def media_rank(st):
-    """小さいほど優先。再生中 > 一時停止、同じ状態なら PC の Amazon Music > PC の YouTube > スマホ。"""
-    order = 2 if st.device == "phone" else (0 if st.source == "amazon" else 1)
+    """小さいほど優先。再生中 > 一時停止、同じ状態なら
+    PC の Amazon Music > メディア プレーヤー > ブラウザの YouTube > スマホ。"""
+    if st.device == "phone":
+        order = 3
+    else:
+        order = {"amazon": 0, "mediaplayer": 1}.get(st.source, 2)
     return (0 if st.playing else 10) + order
 
 
 async def pick_media(manager, cfg, enrich_amazon=None, extra=()):
     amazon = cfg["amazon_match"].lower()
+    mediaplayer = cfg["mediaplayer_match"].lower()
     browsers = [b.lower() for b in cfg["browser_match"]]
     candidates = []
     for s in manager.get_sessions():
@@ -336,6 +345,8 @@ async def pick_media(manager, cfg, enrich_amazon=None, extra=()):
         known_browser = False
         if amazon and amazon in app_id:
             source = "amazon"
+        elif mediaplayer and mediaplayer in app_id:
+            source = "mediaplayer"
         elif any(b in app_id for b in browsers):
             source, known_browser = "youtube", True
         elif cfg["detect_other_browsers"]:
@@ -355,6 +366,8 @@ async def pick_media(manager, cfg, enrich_amazon=None, extra=()):
                 continue  # Spotify など、ブラウザ以外のアプリ
             if site is None and (st.duration or 0) < 180 and youtube_tab_visible():
                 continue  # 広告: タブの題名は動画のままで、再生中の題名だけが広告になる
+            if site is None and 0 < (st.duration or 0) <= 35:
+                continue  # 広告 (タブが裏にある時): 広告は 6〜30 秒のものがほとんど
             if site == "other" and cfg["youtube_only"]:
                 continue
             st.source = site if site in ("youtube", "ytmusic") else "youtube"
@@ -914,18 +927,26 @@ def build_activity(st: MediaState, meta: TrackMeta, position, duration, cfg):
     src = st.source
     label = SOURCE_LABEL[src]
     images = cfg["images"]
-    artist = (clean_artist(st.artist) if src != "amazon" else st.artist) or st.album_artist or "Unknown Artist"
+    artist = (clean_artist(st.artist) if src != "amazon" else st.artist) or st.album_artist
     url = lambda q: search_url(src, q, cfg)
     activity_type = 3 if src == "youtube" and cfg["youtube_activity"] == "watching" else 2
+    linkable = src != "mediaplayer"  # メディア プレーヤーは手元のファイルなので開くページが無い
+    title = st.title
+    if src == "mediaplayer" and not artist and not st.track_number:
+        title = re.sub(r"^\d{1,3}[\s._-]+", "", title) or title  # タグの無いファイルはファイル名が題名になる
+    if not artist and src != "mediaplayer":
+        artist = "Unknown Artist"
 
     act = {
         "type": activity_type,  # 2 = Listening, 3 = Watching
         "status_display_type": {"name": 0, "state": 1, "details": 2}.get(cfg["status_display"], 2),
-        "details": clip(st.title),
-        "details_url": track_url(st, cfg),
-        "state": clip(artist),
-        "state_url": url(artist),
+        "details": clip(title),
     }
+    if artist:
+        act["state"] = clip(artist)
+    if linkable:
+        act["details_url"] = track_url(st, cfg)
+        act["state_url"] = url(artist)
 
     if st.album:
         bits = [st.album + (f" ({meta.year})" if meta.year else "")]
@@ -943,7 +964,7 @@ def build_activity(st: MediaState, meta: TrackMeta, position, duration, cfg):
     }
     if st.album_asin:
         assets["large_url"] = f"https://{cfg['amazon_music_domain']}/albums/{st.album_asin}"
-    elif st.album:
+    elif st.album and linkable:
         assets["large_url"] = url(f"{st.album} {st.album_artist or artist}")
 
     flags = (["スマホ"] if st.device == "phone" else []) + ([label] if src != "amazon" else [])
@@ -970,10 +991,11 @@ def build_activity(st: MediaState, meta: TrackMeta, position, duration, cfg):
 
     if cfg["show_buttons"]:
         verb = "で見る" if src == "youtube" else "で聴く"
-        buttons = [{"label": f"{label}{verb}"[:32], "url": track_url(st, cfg)}]
+        buttons = [{"label": f"{label}{verb}"[:32], "url": track_url(st, cfg)}] if linkable else []
         if meta.itunes_id:
             buttons.append({"label": "他のサービスで聴く", "url": f"https://song.link/i/{meta.itunes_id}"})
-        act["buttons"] = buttons
+        if buttons:
+            act["buttons"] = buttons
     return act
 
 
@@ -1058,7 +1080,7 @@ class App:
     def thumbnail_url(self, st):
         """ブラウザのサムネイルを中継サーバーに置き、その URL を返す (置き終わるまでは None)。"""
         cfg = self.cfg
-        if st.device != "pc" or st.source not in ("youtube", "ytmusic"):
+        if st.device != "pc" or st.source not in ("youtube", "ytmusic", "mediaplayer"):
             return None
         if not (cfg["upload_thumbnails"] and cfg["relay_url"]):
             return None
@@ -1128,7 +1150,8 @@ class App:
         c = self.cfg
         cid = {"amazon": c["client_id"],
                "youtube": c["youtube_client_id"],
-               "ytmusic": c["youtube_music_client_id"] or c["youtube_client_id"]}.get(source)
+               "ytmusic": c["youtube_music_client_id"] or c["youtube_client_id"],
+               "mediaplayer": c["mediaplayer_client_id"]}.get(source)
         return str(cid or c["client_id"]).strip()
 
     def set_status(self, text):
@@ -1205,8 +1228,8 @@ class App:
 
     # -- metadata
     def get_meta(self, st):
-        if not self.cfg["artwork_lookup"]:
-            return TrackMeta()
+        if not self.cfg["artwork_lookup"] or not (st.artist or st.album_artist):
+            return TrackMeta()  # 題名だけで探すと別の曲が当たりやすいので、アーティスト不明なら探さない
         key = st.key
         if key in self.meta_cache:
             return self.meta_cache[key]
@@ -1348,6 +1371,7 @@ def make_assets():
     out.mkdir(exist_ok=True)
     make_icon_image(512, symbol="note").save(out / "amazon_music.png")
     make_icon_image(512, color=(235, 60, 60), symbol="video").save(out / "youtube.png")
+    make_icon_image(512, color=(255, 140, 60), symbol="note").save(out / "media_player.png")
     make_icon_image(512, color=(80, 220, 120), symbol="play").save(out / "playing.png")
     make_icon_image(512, color=(240, 180, 60), symbol="pause").save(out / "paused.png")
     print(f"生成しました: {out}")

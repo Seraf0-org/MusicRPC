@@ -2,7 +2,9 @@
   "client_id": "",
   "youtube_client_id": "",
   "youtube_music_client_id": "",
+  "mediaplayer_client_id": "",
   "amazon_match": "Amazon.Music",
+  "mediaplayer_match": "Microsoft.ZuneMusic",
   "browser_match": [
     "chrome",
     "msedge",
@@ -43,6 +45,7 @@
     "amazon": "amazon_music",
     "youtube": "youtube",
     "ytmusic": "youtube",
+    "mediaplayer": "media_player",
     "playing": "playing",
     "paused": "paused"
   }
